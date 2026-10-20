@@ -207,6 +207,59 @@ function ease() { return __interp(__ease, arguments); }
 function easeIn() { return __interp(__easeIn, arguments); }
 function easeOut() { return __interp(__easeOut, arguments); }
 
+// CSS cubic-bezier(x1, y1, x2, y2) as an easing shape, with the end points fixed at (0, 0) and
+// (1, 1). x1 and x2 are clamped to 0..1 so x stays monotonic and x(s) = u has one root; y1 and y2
+// are free, so the curve may overshoot.
+function __bezierShape(c) {
+  var x1 = Math.min(1, Math.max(0, c[0])), y1 = c[1];
+  var x2 = Math.min(1, Math.max(0, c[2])), y2 = c[3];
+  // Each axis as a polynomial: p(s) = ((a*s + b)*s + k)*s.
+  var kx = 3 * x1, bx = 3 * (x2 - x1) - kx, ax = 1 - kx - bx;
+  var ky = 3 * y1, by = 3 * (y2 - y1) - ky, ay = 1 - ky - by;
+  function x(s) { return ((ax * s + bx) * s + kx) * s; }
+  return function (u) {
+    // Solve x(s) = u, then read y(s): Newton-Raphson from s = u, with bisection where the curve
+    // is flat enough that a Newton step would leave 0..1.
+    var s = u, i, e, d;
+    for (i = 0; i < 8; i++) {
+      e = x(s) - u;
+      if (Math.abs(e) < 1e-10) break;
+      d = (3 * ax * s + 2 * bx) * s + kx;
+      if (Math.abs(d) < 1e-10) break;
+      s = s - e / d;
+    }
+    if (!(s >= 0 && s <= 1) || Math.abs(x(s) - u) > 1e-10) {
+      var lo = 0, hi = 1;
+      for (i = 0; i < 48; i++) {
+        s = (lo + hi) / 2;
+        if (x(s) < u) lo = s; else hi = s;
+      }
+    }
+    return ((ay * s + by) * s + ky) * s;
+  };
+}
+
+// A curve that is not four finite numbers eases linearly rather than failing the expression.
+function __curveShape(c) {
+  if (!Array.isArray(c) || c.length !== 4) return __lin;
+  for (var i = 0; i < 4; i++) {
+    if (typeof c[i] !== 'number' || !isFinite(c[i])) return __lin;
+  }
+  return __bezierShape(c);
+}
+
+// bezier(t, tMin, tMax, v1, v2, [x1, y1, x2, y2]) and bezier(t, v1, v2, [x1, y1, x2, y2]). The
+// curve is read by position, not by looking for an array, so a four-component value (a colour,
+// say) is never mistaken for one. Not an After Effects function: `bezier(t, …, [1/3, 0, 2/3, 1])`
+// is exactly `ease(t, …)`.
+function bezier() {
+  var a = arguments, n = a.length;
+  if (n >= 6) return __interp(__curveShape(a[5]), [a[0], a[1], a[2], a[3], a[4]]);
+  if (n === 5) return __interp(__lin, [a[0], a[1], a[2], a[3], a[4]]);
+  if (n === 4) return __interp(__curveShape(a[3]), [a[0], a[1], a[2]]);
+  return __interp(__lin, [a[0], a[1], a[2]]);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Random numbers and noise.
 

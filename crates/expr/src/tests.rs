@@ -306,11 +306,60 @@ fn ease_curves() {
     assert_close!(f.num("easeOut(0.5, 0, 10)", 0.0) + f.num("easeIn(0.5, 0, 10)", 0.0), 10.0);
 }
 
+/// #1884: `bezier()` follows CSS `cubic-bezier()`. The control points (1/3, 0, 2/3, 1) give
+/// x(s) = s, so y = 3s² − 2s³ — exactly the smoothstep `ease()` uses, which pins the whole curve
+/// rather than a few sampled points.
+#[test]
+fn bezier_matches_ease_for_the_equivalent_curve() {
+    let f = fx();
+    for t in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+        assert_close!(f.num("bezier(time, 0, 1, 0, 100, [1/3, 0, 2/3, 1])", t), f.num("ease(time, 0, 1, 0, 100)", t));
+    }
+    // Short form, like `ease(0.25, 10, 20)`.
+    assert_close!(f.num("bezier(0.25, 10, 20, [1/3, 0, 2/3, 1])", 0.0), f.num("ease(0.25, 10, 20)", 0.0));
+}
+
+#[test]
+fn bezier_clamps_time_eases_and_overshoots() {
+    let f = fx();
+    let io = "bezier(time, 0, 1, 0, 100, [0.42, 0, 0.58, 1])";
+    assert_close!(f.num(io, 0.0), 0.0);
+    assert_close!(f.num(io, 1.0), 100.0);
+    assert_close!(f.num(io, 2.0), 100.0);
+    assert_close!(f.num(io, 0.5), 50.0);
+    // Slow in: below the linear ramp before the midpoint, above it after.
+    assert!(f.num(io, 0.25) < 25.0);
+    assert!(f.num(io, 0.75) > 75.0);
+    // y is unrestricted, so a control point above 1 overshoots the end value...
+    assert!(f.num("bezier(time, 0, 1, 0, 100, [0.3, 1.6, 0.7, 1])", 0.5) > 100.0);
+    // ...while x is clamped to 0..1, keeping x(s) monotonic and the curve solvable: an x outside
+    // the range gives the same curve as the clamped one, at every t, not just at the ends.
+    for t in [0.0, 0.2, 0.5, 0.8, 1.0] {
+        assert_close!(f.num("bezier(time, 0, 1, 0, 100, [-3, 0, 9, 1])", t), f.num("bezier(time, 0, 1, 0, 100, [0, 0, 1, 1])", t));
+    }
+    // tMin == tMax behaves like the other interpolation helpers.
+    assert_close!(f.num("bezier(time, 1, 1, 0, 100, [0.42, 0, 0.58, 1])", 0.5), 0.0);
+    assert_close!(f.num("bezier(time, 1, 1, 0, 100, [0.42, 0, 0.58, 1])", 1.0), 100.0);
+}
+
+#[test]
+fn bezier_falls_back_to_linear_on_an_unusable_curve() {
+    let f = fx();
+    let lin = f.num("linear(time, 0, 1, 0, 100)", 0.25);
+    for curve in ["[0, 0, 1]", "[0, 0, 1, 1, 1]", "\"nope\"", "[0, 0, 1, 1/0]", "[0, 0, 1, 0/0]", "[0, 'x', 1, 1]", "null"] {
+        let e = format!("bezier(time, 0, 1, 0, 100, {curve})");
+        assert_close!(f.num(&e, 0.25), lin);
+    }
+    // A missing curve is the same: the five-argument call is just `linear`.
+    assert_close!(f.num("bezier(time, 0, 1, 0, 100)", 0.25), lin);
+}
+
 #[test]
 fn interpolation_with_arrays() {
     let f = fx();
     assert_eq!(f.pos("linear(time, 0, 1, [0, 0], [100, 50])", 0.5), [50.0, 25.0, 0.0]);
     assert_eq!(f.pos("ease(time, 0, 1, [0, 0], [100, 50])", 1.0), [100.0, 50.0, 0.0]);
+    assert_eq!(f.pos("bezier(time, 0, 1, [0, 0], [100, 50], [1/3, 0, 2/3, 1])", 0.5), [50.0, 25.0, 0.0]);
 }
 
 // ---- object model -----------------------------------------------------------------------------

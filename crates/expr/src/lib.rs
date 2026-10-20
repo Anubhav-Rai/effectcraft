@@ -16,7 +16,7 @@
 //!   `mask`, `content`, `text.sourceText`, `marker`, `toComp`/`fromComp`/`toWorld`/`fromWorld`,
 //!   `sourceRectAtTime`), property methods (`valueAtTime`, `velocityAtTime`, `speedAtTime`, `key`,
 //!   `nearestKey`, `numKeys`, `wiggle`, `temporalWiggle`, `smooth`, `loopIn/Out[Duration]`) and the
-//!   global helpers (`linear`/`ease`/`easeIn`/`easeOut`, `random`/`gaussRandom`/`seedRandom`/
+//!   global helpers (`linear`/`ease`/`easeIn`/`easeOut`/`bezier`, `random`/`gaussRandom`/`seedRandom`/
 //!   `noise`, vector maths, `clamp`, `lookAt`, time and colour conversions, `posterizeTime`).
 //! * **Determinism**: `wiggle` and `random` are seeded by layer index, property uid (and time /
 //!   `seedRandom`), so frames render identically on every thread and platform.
