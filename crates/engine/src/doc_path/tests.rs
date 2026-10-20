@@ -34,9 +34,12 @@ impl Services for Recording {
     }
 }
 
-/// Probes every file as a still.
+/// Probes every file as a still. Only the Unix case below imports through it, and an unused
+/// struct fails `cargo xtask ci`'s `clippy -D warnings` on Windows.
+#[cfg(unix)]
 struct Stills;
 
+#[cfg(unix)]
 impl crate::Importer for Stills {
     fn probe(&self, path: &str) -> Result<Footage, String> {
         if !std::path::Path::new(path).is_file() {
