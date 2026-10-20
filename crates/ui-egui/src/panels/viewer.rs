@@ -1094,11 +1094,14 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let a3 = effectcraft_engine::geom::vec3(a[0], a[1], a[2]);
                     let len = 60.0 / zoom as f64;
                     let pinv = parent_world_inverse(&ectx, l);
-                    for (axis, col, name) in [
-                        (effectcraft_engine::geom::vec3(len, 0.0, 0.0), Color32::from_rgb(0xe0, 0x50, 0x50), "x"),
-                        (effectcraft_engine::geom::vec3(0.0, len, 0.0), Color32::from_rgb(0x60, 0xd0, 0x60), "y"),
-                        (effectcraft_engine::geom::vec3(0.0, 0.0, len), Color32::from_rgb(0x50, 0x8c, 0xf0), "z"),
+                    for (unit, col, name) in [
+                        (effectcraft_engine::geom::vec3(1.0, 0.0, 0.0), Color32::from_rgb(0xe0, 0x50, 0x50), "x"),
+                        (effectcraft_engine::geom::vec3(0.0, 1.0, 0.0), Color32::from_rgb(0x60, 0xd0, 0x60), "y"),
+                        (effectcraft_engine::geom::vec3(0.0, 0.0, 1.0), Color32::from_rgb(0x50, 0x8c, 0xf0), "z"),
                     ] {
+                        // The axis is a layer-space vector, so the layer's own Scale used to shrink
+                        // the arrow along with it (#1910).
+                        let axis = gizmo_axis(&w, unit, len);
                         // (clipped at the camera's near plane, #572)
                         let Some([o, e]) = project_segment(&pc, a3, a3 + axis) else { continue };
                         // An axis pointing at the camera (Z in the default front view) projects to
@@ -2096,6 +2099,17 @@ fn axis_drag(dir: [f64; 3], s: [f64; 2]) -> ([f64; 3], [f64; 3]) {
     (dir.map(|v| v * s[0] / n), dir.map(|v| v * s[1] / n))
 }
 
+/// A gizmo axis as a layer-space vector whose length in **world** space is `len`, so the arrow
+/// keeps its size on screen however the layer (or its parent) is scaled: After Effects draws the
+/// 3D axis arrows at a constant size, and a precomp at 2 % Scale used to get a 1 px gizmo (#1910).
+/// Perspective still applies afterwards, so an axis pointing away from the camera still shortens.
+fn gizmo_axis(w: &effectcraft_engine::geom::Mat4, unit: effectcraft_engine::geom::Vec3, len: f64) -> effectcraft_engine::geom::Vec3 {
+    let world = w.apply_vec(unit).length();
+    // A zero or degenerate scale leaves no direction to normalise: keep the plain axis, which
+    // projects to the grabbable stub exactly as it did before.
+    if world.is_finite() && world > 1e-9 { unit * (len / world) } else { unit * len }
+}
+
 /// The gizmo arrow under screen point `p`.
 fn axis_at(hits: &[(LayerId, [Pos2; 2], [f64; 3], [f64; 3])], p: Pos2) -> Option<(LayerId, [Pos2; 2], [f64; 3], [f64; 3])> {
     let dist = |[a, b]: [Pos2; 2]| {
@@ -2910,6 +2924,27 @@ mod tests {
         assert_eq!(at([24.0, -24.0]), [0.0, 0.0, 60.0]);
         assert_eq!(at([-12.0, 12.0]), [0.0, 0.0, -30.0]);
         assert_eq!(at([10.0, 10.0]), [0.0, 0.0, 0.0]);
+    }
+
+    /// #1910: the arrow is a constant size on screen whatever the layer's Scale, so a precomp at
+    /// 2 % no longer gets a gizmo too small to grab.
+    #[test]
+    fn gizmo_axis_ignores_the_layers_scale() {
+        let len = 60.0;
+        let world = |m: &Mat4, unit| m.apply_vec(gizmo_axis(m, unit, len)).length();
+        for unit in [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)] {
+            assert!((world(&Mat4::IDENTITY, unit) - len).abs() < 1e-9);
+            // Tiny, huge and non-uniform scales all draw the same length.
+            for s in [vec3(0.02, 0.02, 0.02), vec3(40.0, 40.0, 40.0), vec3(0.05, 3.0, 1.0)] {
+                let got = world(&Mat4::scale(s), unit);
+                assert!((got - len).abs() < 1e-9, "scale {s:?} axis {unit:?}: {got}");
+            }
+        }
+        // An unscaled layer keeps exactly the vector it had before the fix.
+        assert_eq!(gizmo_axis(&Mat4::IDENTITY, vec3(1.0, 0.0, 0.0), len), vec3(len, 0.0, 0.0));
+        // A collapsed scale has no direction to normalise: the plain axis, as before, not a NaN.
+        let flat = gizmo_axis(&Mat4::scale(vec3(0.0, 1.0, 1.0)), vec3(1.0, 0.0, 0.0), len);
+        assert_eq!(flat, vec3(len, 0.0, 0.0));
     }
 
     #[test]
