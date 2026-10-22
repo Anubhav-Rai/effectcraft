@@ -1,0 +1,46 @@
+name: Mac test build
+
+# Fork-only: builds a branch that is waiting on review into a macOS binary, so a fix can be tried
+# on a laptop without compiling there. `ref` is an input rather than the dispatch ref, so that no
+# CI commit has to be added to the branch under review. Standard runner, arm64, unsigned.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to build"
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: effectcraft-cli
+    timeout-minutes: 90
+    runs-on: macos-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: mac-test-build
+      - run: cargo build --release -p effectcraft-cli
+      - name: Stage the binary
+        run: |
+          mkdir -p dist
+          cp target/release/effectcraft-cli dist/
+          ./dist/effectcraft-cli --version
+          git -C . log -1 --format='%H %s' > dist/BUILD.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: effectcraft-cli-${{ inputs.ref }}
+          path: dist/
