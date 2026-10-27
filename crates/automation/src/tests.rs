@@ -1380,3 +1380,46 @@ fn automation_roots_confine_file_access() {
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1, "only the unconfined save");
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// #2131 (audit F-11, "Unlisted writers are checked as reads"): a command that writes a file it
+/// is given belongs in `WRITES`, even when it also reads one. Exporting a timeline and creating
+/// a project from a template wrote into a read-only root, because an unlisted path is checked as
+/// a read.
+#[test]
+fn automation_roots_check_an_unlisted_writer_as_a_write() {
+    use crate::confine::Confinement;
+    let base = std::env::temp_dir().join(format!("ec-mcp-writers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (read, write) = (base.join("in"), base.join("out"));
+    for d in [&read, &write] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let p = |d: &std::path::Path, f: &str| d.join(f).to_string_lossy().into_owned();
+    let mut s = server();
+    s.backend().confine(Confinement::new(std::slice::from_ref(&read), std::slice::from_ref(&write)).unwrap());
+    let refused = |s: &mut McpServer, args: Value| {
+        let (c, err) = call(s, "execute_command", args.clone());
+        assert!(err, "{args} should be refused: {c:?}");
+        c[0]["text"].as_str().unwrap_or_default().to_string()
+    };
+    call_json(&mut s, "execute_command", json!({"command": "comp.new", "params": {"name": "A", "width": 64, "height": 64}}));
+    // File ▸ Export ▸ Premiere Pro Project: the timeline file, and any pre-render beside it.
+    let msg = refused(&mut s, json!({"command": "file.exportTimeline", "params": {"comp": "A", "path": p(&read, "t.xml")}}));
+    assert!(msg.contains("cannot write"), "{msg}");
+    call_json(&mut s, "execute_command", json!({"command": "file.exportTimeline", "params": {"comp": "A", "path": p(&write, "t.xml")}}));
+    assert!(write.join("t.xml").is_file(), "the export inside the write root went through");
+    assert_eq!(std::fs::read_dir(&read).unwrap().count(), 0, "nothing was written into the read root");
+    // New Project from Template saves the project itself (`file.saveAs` from inside the command,
+    // where the confinement no longer sees it) and extracts the template's footage.
+    let msg = refused(&mut s, json!({"command": "templates.create", "params": {"id": "title-card", "projectPath": p(&read, "t.ecproj")}}));
+    assert!(msg.contains("cannot write"), "{msg}");
+    let args = json!({"command": "templates.create", "params": {"id": "title-card", "projectPath": p(&write, "t.ecproj"), "footageDir": p(&read, "f")}});
+    assert!(refused(&mut s, args).contains("cannot write"));
+    call_json(&mut s, "execute_command", json!({"command": "templates.create", "params": {"id": "title-card", "projectPath": p(&write, "t.ecproj")}}));
+    assert!(write.join("t.ecproj").is_file(), "the project inside the write root went through");
+    // The template it reads is still a read: a read root is enough for `path`, and refusing it
+    // for another reason means the confinement let it by.
+    let msg = refused(&mut s, json!({"command": "templates.create", "params": {"path": p(&read, "none.ectemplate")}}));
+    assert!(!msg.contains("automation"), "a template in a read root is readable: {msg}");
+    let _ = std::fs::remove_dir_all(&base);
+}

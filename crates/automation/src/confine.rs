@@ -4,7 +4,8 @@
 //!
 //! Every engine command an agent runs ([`crate::Backend::exec`], also each step of an
 //! `engine.batch`) is checked before it runs: its file parameters must be absolute paths inside
-//! the roots (symbolic links resolved, no `..`), any other absolute path in its parameters too,
+//! the roots (symbolic links resolved, no `..`) — the ones it writes inside a write root, and a
+//! command can do both — any other absolute path in its parameters too,
 //! and commands that write to a file they are not given (Save, Increment and Save, rendering the
 //! Render Queue) are checked against where they would write. Commands that run code or open
 //! other applications (scripts, Execute File, Reveal in Finder…) are refused while confined.
@@ -50,6 +51,7 @@ const READS: &[(&str, &[&str])] = &[
     ("file.importMultiple", &["paths"]),
     ("file.importRecent", &["path"]),
     ("file.importLottie", &["path"]),
+    ("templates.create", &["path"]),
     ("file.importTimeline", &["path"]),
     ("file.replaceFootage", &["path"]),
     ("file.relinkFootage", &["folder"]),
@@ -72,6 +74,12 @@ const WRITES: &[(&str, &[&str])] = &[
     ("file.saveAs", &["path"]),
     ("file.saveCopy", &["path"]),
     ("file.saveCopyAsXml", &["path"]),
+    // Writes the timeline file, and the pre-rendered movies of the layers the format can't
+    // express into the same folder.
+    ("file.exportTimeline", &["path"]),
+    // Saves the new project (`file.saveAs`, from inside the command) and extracts the template's
+    // footage; with neither given, the footage goes into the settings store.
+    ("templates.create", &["projectPath", "footageDir"]),
     ("file.collectFiles", &["folder"]),
     ("file.exportLottie", &["path"]),
     ("comp.saveFrameAs", &["path"]),
@@ -142,7 +150,7 @@ impl Confinement {
             for step in params.get("steps").and_then(Value::as_array).into_iter().flatten() {
                 let Some(inner) = step.get("command").or_else(|| step.get("id")).and_then(Value::as_str) else { continue };
                 let inner_params = step.get("params").cloned().unwrap_or(Value::Null);
-                let named = keys_of(READS, inner).or_else(|| keys_of(WRITES, inner)).unwrap_or(&[]);
+                let named = [keys_of(WRITES, inner).unwrap_or_default(), keys_of(READS, inner).unwrap_or_default()].concat();
                 // A step's `$N` reference is resolved only as the batch runs: never for a file.
                 if named.iter().filter_map(|k| inner_params.get(*k)).any(has_reference) {
                     return Err(Error::BadArgs(format!("`{inner}` in a batch: file paths can't be `$N` references while file access is confined")));
@@ -153,36 +161,37 @@ impl Confinement {
             }
             return Ok(None);
         }
-        let (named, access) = match (keys_of(WRITES, id), keys_of(READS, id)) {
-            (Some(k), _) => (k, Access::Write),
-            (None, Some(k)) => (k, Access::Read),
-            (None, None) if id.starts_with("renderQueue.") || id == "prefs.set" => (&[][..], Access::Write),
-            (None, None) => (&[][..], Access::Read),
-        };
+        let writes = keys_of(WRITES, id).unwrap_or_default();
+        let reads = keys_of(READS, id).unwrap_or_default();
+        // Anything the command is given that the tables don't name: a write for a command that
+        // writes, a read otherwise.
+        let rest = if writes.is_empty() && !(id.starts_with("renderQueue.") || id == "prefs.set") { Access::Read } else { Access::Write };
         let mut given = false;
-        for key in named {
-            let Some(v) = params.get(*key).filter(|v| !v.is_null()) else { continue };
-            given = true;
-            let paths: Vec<&Value> = match v {
-                Value::Array(a) => a.iter().collect(),
-                v => vec![v],
-            };
-            for p in paths {
-                // A Render Queue output may name a template instead of a file.
-                match p.as_str() {
-                    Some(s) if id == "render.preRender" && !looks_like_path(s) => {}
-                    Some(s) => {
-                        self.check(s, access)?;
+        for (keys, access) in [(writes, Access::Write), (reads, Access::Read)] {
+            for key in keys {
+                let Some(v) = params.get(*key).filter(|v| !v.is_null()) else { continue };
+                given = true;
+                let paths: Vec<&Value> = match v {
+                    Value::Array(a) => a.iter().collect(),
+                    v => vec![v],
+                };
+                for p in paths {
+                    // A Render Queue output may name a template instead of a file.
+                    match p.as_str() {
+                        Some(s) if id == "render.preRender" && !looks_like_path(s) => {}
+                        Some(s) => {
+                            self.check(s, access)?;
+                        }
+                        None => return Err(Error::BadArgs(format!("`{id}`: `{key}` must be a path"))),
                     }
-                    None => return Err(Error::BadArgs(format!("`{id}`: `{key}` must be a path"))),
                 }
             }
         }
         // Any other absolute path the command is given.
         let mut other = vec![];
-        absolute_strings(params, named, &mut other);
+        absolute_strings(params, &[writes, reads].concat(), &mut other);
         for s in other {
-            self.check(&s, access)?;
+            self.check(&s, rest)?;
         }
         // An entry of a recent list by index is a path the agent didn't give.
         if matches!(id, "file.openRecent" | "file.importRecent" | "anim.applyRecentPreset") && !given {
